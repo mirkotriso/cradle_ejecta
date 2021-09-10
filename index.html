@@ -5,29 +5,60 @@
     <meta charset="utf-8">
     <title>Ejecta simulation - Ryugu</title>
     <style>
-        body {
+        html, body {
             margin: 0;
+            height: 100%;
+            min-height: 100vh;
+        }
+        .wrap {
+            height: 100%;
+        }
+        .footer {
+            background-color: black;
+            color: white;
+            position: fixed;
+            bottom: 0px;
+            width: 100%;
+            height: 30px;
+            margin-bottom: 0px;
+            font-family: sans-serif;
+            vertical-align: text-bottom;
+            padding-bottom: 5px;
+            font-size: small;
+            display:flex;
+            justify-content: space-between;
+        }
+        .footer a {
+            color: #93b0d0;
         }
     </style>
 </head>
 
 <body>
-    <!-- <script src="./threejs/build/three.js"></script> -->
+    <div id="wrap">
     <script type="module">
 
         import * as THREE from './threejs/build/three.module.js';
-            import { GUI } from './threejs/examples/jsm/libs/dat.gui.module.js';
-            import { OBJLoader } from './threejs/examples/jsm/loaders/OBJLoader.js';
-            import { OrbitControls } from './threejs/examples/jsm/controls/OrbitControls.js';
+        import { GUI } from './threejs/examples/jsm/libs/dat.gui.module.js';
+        import { OBJLoader } from './threejs/examples/jsm/loaders/OBJLoader.js';
+        import { OrbitControls } from './threejs/examples/jsm/controls/OrbitControls.js';
 
+            const axesHelper = new THREE.AxesHelper( 3 );
             const bkgrndMaxRadius = 10;
+            const reducer = (accumulator, curr) => accumulator + curr;
             const MAX_NP = 30000;
+            const DP_MAX = 10;
+            const DP_MIN = 0.01;
             const COLOR = [108, 188, 213];
             const clock = new THREE.Clock();
 
             // Options to be added to the GUI
             var options = {
                 particleCount: 2500,
+                dp: 1,
+                toggle_srp: true,
+                lon: 0,
+                lat: 90,
                 speed: 500,
                 play: false,
                 reset: false,
@@ -45,13 +76,18 @@
                 if (value > MAX_NP) {
                     value = MAX_NP;
                 }
-                console.log(value)
                 options.particleCount = value;
             }).name('Particles');
-            ejectaFolder.add(options, 'run').name('Run');
-            ejectaFolder.add(options, 'destroy').name('Reset');
+            ejectaFolder.add(options, 'dp', DP_MIN, DP_MAX).onChange().name('Diameter (mm)');
+            ejectaFolder.add(options, 'toggle_srp').onChange().name('Include SRP');
             ejectaFolder.open();
+            const locFolder = gui.addFolder('Ejecta Location')
+            locFolder.add(options, 'lon', 0, 360).onChange().name('Longitude (°)');
+            locFolder.add(options, 'lat', 0, 90).onChange().name('Latitude (°)');
+            locFolder.open();
             const controlFolder = gui.addFolder('Controls');
+            controlFolder.add(options, 'run').name('Run');
+            controlFolder.add(options, 'destroy').name('Reset');
             controlFolder.add(options, 'speed', 100, 2000).listen().name('Sim. Speed');
             controlFolder.open();
 
@@ -65,17 +101,25 @@
             const mua = 32;  // m^3 / s^2
             // sun gravitational parameter
             const mus = 1.327 * 10**20;
+            // asteroid density
+            const rho_a = 2600;
             // 
-            const P0 = 1.02 * 10**17;
+            const P0 = 1367;
+            // astronomical unit
+            const AU = 1.49597870691e11;
+            // speed of light
+            const SOL = 2.998e8;
             // area to mass ratio of the particle
             const m_a = 50;  // area to mass ratio
             // lightness parameter
-            const beta = (1 + Cr) * P0 / (m_a * mua**(1/3) * mus**(2/3))
+            const BETA = P0 / SOL * AU ** 2 / mus * (1 + Cr) * 3 / (2 * rho_a * options.dp / 1000);
             // angular velocity of the asteroid orbit
             const omega = 2 * Math.PI / (Ta * 24 * 3600); 
+            // rotational speed
+            const rot_per = 2 * Math.PI / (7.627 * 3600);
             // normalisation constants
             const T = 1 / omega;
-            const L = (mua / omega**2)**(1/3)
+            const L = (mus / omega**2)**(1/3)
             const V = L / T;
 
             // particle ejecta properties
@@ -86,12 +130,31 @@
                 var y0 = [];
                 for (var i = 0; i < options.particleCount; i++)
                 {   
+                    let lon = options.lon * Math.PI / 180;
+                    let lat = options.lat * Math.PI / 180;
+                    let xi = Ra * Math.cos(lat) * Math.cos(lon);
+                    let yi = Ra * Math.cos(lat) * Math.sin(lon);
+                    let zi = Ra * Math.sin(lat);
+
                     let uv = randomSpherePoint(0, 0, 0, 1);
                     let vi = randomSpeed(v_min, v_esc);
-                    let vxi = vi * uv[0];
-                    let vyi = vi * uv[1];
-                    let vzi = vi * uv[2];
-                    y0.push([0, 0, Ra, vxi, vyi, vzi]);
+
+                    let alpha = - Math.PI / 2 + lat;
+                    let beta = - Math.PI / 2 - lon;
+                    let sa = Math.sin(alpha);
+                    let sb = Math.sin(beta);
+                    let ca = Math.cos(alpha);
+                    let cb = Math.cos(beta);
+
+                    let vtx = vi * uv[0];
+                    let vty = vi * uv[1];
+                    let vtz = vi * uv[2];
+
+                    let vxi = cb * vtx + ca * sb * vty + sa * sb * vtz;
+                    let vyi = - sb * vtx + ca * cb * vty + sa * cb * vtz;
+                    let vzi = ca * vtz - sa * vty;
+
+                    y0.push([xi, yi, zi, vxi, vyi, vzi]);
                 }
                 return y0;
             }
@@ -104,12 +167,12 @@
 
                 var ryugu = scene.getObjectByName("ryugu", true);
                 if (ryugu != undefined) {
-                    ryugu.rotation.z += 1/2 * 0.01;
+                    ryugu.rotation.z += rot_per * dh;
                 }
 
                 if (options.play == true) {
                     const state_0 = getInitState(options);
-                    ejecta = new EjectaParticles('particles', state_0);
+                    ejecta = new EjectaParticles('particles', state_0, options.dp);
                     ejecta.addToScene(scene);
                     options.play = false;
                 }
@@ -141,17 +204,18 @@
                 container.appendChild( renderer.domElement );
                 // Create the scene that holds all of the visible objects.
                 let scene = new THREE.Scene();
+                // scene.add( axesHelper );  // uncomment to get the axes
 
                 const camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 0.1, 1000 );
                 camera.up.set(0, 0, 1);
-                camera.position.set(5, 5, 0);
+                camera.position.set(-2.5, -2.5, 2.5);
                 scene.add( camera );
 
                 const ambientLight = new THREE.AmbientLight( 0xcccccc, 0.9 );
                 scene.add( ambientLight );
 
                 const light = new THREE.PointLight( 0xffffff, 3, 15 );
-                light.position.set( 4, 0, 0 );
+                light.position.set( -4, 0, 0 );
                 light.castShadow = true;
                 scene.add( light );
                 
@@ -248,7 +312,7 @@
 
                 let xdot, ydot, zdot, vxdot, vydot, vzdot;
                 const r = Math.sqrt(states[0]**2 + states[1]**2 + states[2]**2);
-                if (r < 0.75*Ra) {
+                if (r < 0.9*Ra) {
                     xdot = 0;
                     ydot = 0;
                     zdot = 0;
@@ -256,19 +320,35 @@
                     vydot = 0;
                     vzdot = 0;
                 } else {
-                    xdot = states[3];
-                    ydot = states[4];
-                    zdot = states[5];
-                    vxdot = - mua * states[0] / r**3;
-                    vydot = - mua * states[1] / r**3;
-                    vzdot = - mua * states[2] / r**3;
+                    let x, y, z, vx, vy, vz;
+
+                    x = states[0] / L;
+                    y = states[1] / L;
+                    z = states[2] / L;
+                    vx = states[3] / V;
+                    vy = states[4] / V;
+                    vz = states[5] / V;
+                    // compute radii
+                    let r_sp = Math.sqrt((x + 1)**2 + y**2 + z**2);
+                    let r_ap = Math.sqrt(x ** 2 + y ** 2 + z ** 2);
+                    let mu = mua / (mus + mua);
+                    // define some parameters to avoid repetitions into the equations
+                    let K1 = (1 - beta) * (1 - mu) / r_sp**3;
+                    let K2 = mu / r_ap**3;
+
+                    xdot = vx * V;
+                    ydot = vy * V;
+                    zdot = vz * V;
+                    vxdot = (2 * vy + (x + 1 - mu) - K1 * (x + 1) - K2 * x) * (V / T);
+                    vydot = (- 2 * vx + y - K1 * y - K2 * y) * (V / T);
+                    vzdot = (- K1 * z - K2 * z) * (V / T);
                 }
 
                 return [xdot, ydot, zdot, vxdot, vydot, vzdot];}
 
                 
                 class EjectaParticles extends THREE.Points {
-                constructor (name, data) {
+                constructor (name, data, dp) {
                     super();
 
                     const positions = [];
@@ -287,13 +367,15 @@
                     const sprite = new THREE.TextureLoader().load( './img/circle.png' );
                     // TODO: to change size and texture need to loop and create array of points
                     // https://stackoverflow.com/questions/53786863/points-opacity-size-within-three-js
-                    const material = new THREE.PointsMaterial( { size: 0.075, map: sprite, vertexColors: true,
+                    let psize = 0.06 + (options.dp - DP_MIN) / (DP_MAX - DP_MIN) * (0.1 - 0.06)
+                    const material = new THREE.PointsMaterial( { size: psize, map: sprite, vertexColors: true,
                         blending: THREE.AdditiveBlending, transparent: true, depthTest: true, alphaTest: 0.6} );
 
                     this.geometry = geometry;
                     this.material = material;
                     this.name = name;
                     this.states = [...data];
+                    this.beta = getBeta(dp);
                     this.sortParticles = true;
 
                 }
@@ -303,11 +385,18 @@
                     const positions = this.geometry.attributes.position.array;
                     // update the position here
                     var j = 0;
+                    let beta_dyn = this.beta;
+                    if (options.toggle_srp == false) {
+                        beta_dyn = 0;
+                    }
                     let new_states = [] 
                     this.states.forEach(function (item, index) {
-                        let dy = dynamics(item, beta);
+                        let dy = dynamics(item, beta_dyn);
                         dy = dy.map( function (x) { return x*dh; } );
-                        const pos = item.map( function(x, idx) { return x + dy[idx]; } );
+                        let pos = item.map( function(x, idx) { return x + dy[idx]; } );
+                        if (dy.reduce(reducer) == 0) {
+                            pos = [0, 0, 0];
+                        }
                         positions[j*3] = pos[0] / Ra / 2;
                         positions[j*3+1] = pos[1] / Ra / 2;
                         positions[j*3+2] = pos[2] / Ra / 2;
@@ -356,9 +445,28 @@
                 return Math.random() * (u_max - u_min) + u_min;
             }
 
+            /**
+             * Compute the lightness parameter.
+             * dp is in mm
+             * */
+            function getBeta(dp) {
+                return P0 / SOL * AU ** 2 / mus * (1 + Cr) * 3 / (2 * rho_a * dp / 1000);
+            }
+
             init();
 
 		</script>
+        </div>
+
+    <div class="footer">
+        <p>Author: Mirko Trisolini | <a href="mailto:mirko.trisolini@polimi.it">mirko.trisolini@polimi.it</a> </p>
+        <p style="float:right">CRADLE | <a href="www.cradle.polimi.it">www.cradle.polimi.it</a></p>
+    </div>
 </body>
+
+<!-- <footer>
+    <p>Author: Mirko Trisolini<br>
+    <a href="mailto:mirko.trisolini@polimi.it">mirko.trisolini@polimi.it</a></p>
+</footer> -->
 
 </html>
