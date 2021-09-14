@@ -5,14 +5,17 @@
     <meta charset="utf-8">
     <title>Ejecta simulation - Ryugu</title>
     <style>
-        html, body {
+        html,
+        body {
             margin: 0;
             height: 100%;
             min-height: 100vh;
         }
+
         .wrap {
             height: 100%;
         }
+
         .footer {
             background-color: black;
             color: white;
@@ -25,9 +28,10 @@
             vertical-align: text-bottom;
             padding-bottom: 5px;
             font-size: small;
-            display:flex;
+            display: flex;
             justify-content: space-between;
         }
+
         .footer a {
             color: #93b0d0;
         }
@@ -36,9 +40,9 @@
 
 <body>
     <div id="wrap">
-    <script type="module">
+        <script type="module">
 
-        import * as THREE from './threejs/build/three.module.js';
+            import * as THREE from './threejs/build/three.module.js';
         import { GUI } from './threejs/examples/jsm/libs/dat.gui.module.js';
         import { OBJLoader } from './threejs/examples/jsm/loaders/OBJLoader.js';
         import { OrbitControls } from './threejs/examples/jsm/controls/OrbitControls.js';
@@ -54,9 +58,10 @@
 
             // Options to be added to the GUI
             var options = {
-                particleCount: 2500,
+                particleCount: 5000,
                 dp: 1,
                 toggle_srp: true,
+                vej: 'C2',
                 lon: 0,
                 lat: 90,
                 speed: 500,
@@ -79,6 +84,7 @@
                 options.particleCount = value;
             }).name('Particles');
             ejectaFolder.add(options, 'dp', DP_MIN, DP_MAX).onChange().name('Diameter (mm)');
+            ejectaFolder.add(options, 'vej', ['C2', 'Random']).onChange().name('Ej. Conditions');
             ejectaFolder.add(options, 'toggle_srp').onChange().name('Include SRP');
             ejectaFolder.open();
             const locFolder = gui.addFolder('Ejecta Location')
@@ -101,6 +107,8 @@
             const mua = 32;  // m^3 / s^2
             // sun gravitational parameter
             const mus = 1.327 * 10**20;
+            // adimensional gravitational parameter
+            const mu = mua / (mus + mua);
             // asteroid density
             const rho_a = 2600;
             // 
@@ -127,6 +135,11 @@
             const v_min = v_esc / 4;
 
             function getInitState(options) {
+                var beta_dyn = getBeta(options.dp)
+                var l2 = get_l2(beta_dyn);
+                // compute the jacobi constant
+                var C2 = 2 * get_potential(l2, 0, 0, beta_dyn);
+
                 var y0 = [];
                 for (var i = 0; i < options.particleCount; i++)
                 {   
@@ -137,7 +150,19 @@
                     let zi = Ra * Math.sin(lat);
 
                     let uv = randomSpherePoint(0, 0, 0, 1);
-                    let vi = randomSpeed(v_min, v_esc);
+                    let v1, v2;
+                    if (options.vej == 'C2') {
+                        let v_c2 = Math.sqrt(2 * get_potential(xi/L, yi/L, zi/L, beta_dyn) - C2);
+                        // compute the ejection velocity by slightly increasing v_c2
+                        let v_ej = v_c2 + 0.05 * (v_esc / V - v_c2);
+                        v1 = v_c2 * V;
+                        v2 = v_ej * V;
+                    } else {
+                        v1 = v_min;
+                        v2 = v_esc;
+                    }
+                    // let vi = randomSpeed(v_min, v_esc);
+                    let vi = randomSpeed(v1, v2);
 
                     let alpha = - Math.PI / 2 + lat;
                     let beta = - Math.PI / 2 - lon;
@@ -247,6 +272,7 @@
 
             // Texture Loader
             let textureLoader = new THREE.TextureLoader();
+            textureLoader.minFilter = THREE.LinearFilter;
             let addGalaxy = function (scene) { 
             // Galaxy
             let galaxyGeometry = new THREE.SphereGeometry(bkgrndMaxRadius, 32, 32);
@@ -331,7 +357,6 @@
                     // compute radii
                     let r_sp = Math.sqrt((x + 1)**2 + y**2 + z**2);
                     let r_ap = Math.sqrt(x ** 2 + y ** 2 + z ** 2);
-                    let mu = mua / (mus + mua);
                     // define some parameters to avoid repetitions into the equations
                     let K1 = (1 - beta) * (1 - mu) / r_sp**3;
                     let K2 = mu / r_ap**3;
@@ -346,6 +371,22 @@
 
                 return [xdot, ydot, zdot, vxdot, vydot, vzdot];}
 
+                function get_l2(beta) {
+                    let alpha = mu / (1 - mu);
+                    let x2 = 1 - mu + Math.sqrt(alpha / beta);
+                    return x2 - (1 - mu);
+                }
+
+                function get_potential(x, y, z, beta) {
+                    let r_sp = Math.sqrt((x + 1)**2 + y**2 + z**2);
+                    let r_ap = Math.sqrt(x ** 2 + y ** 2 + z ** 2);
+
+                    // define some parameters to avoid repetitions into the equations
+                    let K1 = (1 - beta) * (1 - mu) / r_sp;
+                    let K2 = mu / r_ap;
+
+                    return 0.5 * (x**2 + y**2) + (1 - mu) * x + K1 + K2 + 0.5 * (1 - mu)**2;
+                }
                 
                 class EjectaParticles extends THREE.Points {
                 constructor (name, data, dp) {
@@ -424,7 +465,7 @@
             }
 
             /*
-            Returns a random point of a sphere, evenly distributed over the sphere.
+            Returns a random point of a hemisphere, evenly distributed over the sphere.
             The sphere is centered at (x0,y0,z0) with the passed in radius.
             The returned point is returned as a three element array [x,y,z]. 
             */
@@ -438,9 +479,11 @@
                 let y = y0 + (radius * Math.sin(phi) * Math.sin(theta));
                 let z = z0 + (radius * Math.cos(phi));
 
-            return [x, y, z];
-            }
+            return [x, y, z];}
 
+            /**
+             * Generate uniform random speed in the given interval
+             * */
             function randomSpeed(u_min, u_max) {
                 return Math.random() * (u_max - u_min) + u_min;
             }
@@ -456,17 +499,12 @@
             init();
 
 		</script>
-        </div>
+    </div>
 
     <div class="footer">
         <p>Author: Mirko Trisolini | <a href="mailto:mirko.trisolini@polimi.it">mirko.trisolini@polimi.it</a> </p>
         <p style="float:right">CRADLE | <a href="www.cradle.polimi.it">www.cradle.polimi.it</a></p>
     </div>
 </body>
-
-<!-- <footer>
-    <p>Author: Mirko Trisolini<br>
-    <a href="mailto:mirko.trisolini@polimi.it">mirko.trisolini@polimi.it</a></p>
-</footer> -->
 
 </html>
